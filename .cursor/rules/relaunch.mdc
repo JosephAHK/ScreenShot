@@ -1,0 +1,34 @@
+---
+description: Rebuild and relaunch ScreenShot after Swift source changes
+globs: ScreenShot/**/*.swift
+alwaysApply: false
+---
+
+# Relaunch ScreenShot after changes
+
+After you **edit, add, or delete** any file under `ScreenShot/`, rebuild and relaunch the app so the user can test immediately. Do this as the **last step** of the task (after a successful build).
+
+## Commands
+
+Run from the project root:
+
+```bash
+osascript -e 'quit app "ScreenShot"' 2>/dev/null || true
+sleep 1
+./install.sh
+```
+
+`install.sh` runs `./build.sh` (which `swiftc`s the sources and ad-hoc codesigns the bundle with `--identifier com.screenshot.app`), quits any running instance, runs `tccutil reset ScreenCapture com.screenshot.app` to clear stale TCC entries so macOS re-prompts cleanly on launch, `ditto`s the new `.app` into `/Applications/ScreenShot.app` (or `~/Applications/ScreenShot.app` as a fallback), and opens the app.
+
+Ad-hoc re-signing on every build is required — otherwise the bundle signature changes silently and macOS will not honor the Screen Recording grant even if the toggle in System Settings looks enabled.
+
+- If `./build.sh` fails, fix compile errors first; do not relaunch until the build succeeds.
+- Run relaunch even for small edits (one-line fixes, UI tweaks, etc.).
+- If macOS pops a fresh Screen Recording prompt after relaunch, that is expected because of the `tccutil reset` — tell the user to allow it once.
+
+## Notes
+
+- Menu bar app: no Dock icon — look for the **`camera.viewfinder`** SF Symbol in the menu bar. Press **F4** anywhere to start a region capture.
+- Cmd+C inside the overlay copies the selected region to the clipboard and dismisses; Esc cancels.
+- Do not relaunch for changes only to `README.md`, `.cursor/rules/`, `Package.swift` platform version, or other non-`ScreenShot/` files unless the user asks.
+- First launch after a `tccutil reset` will re-prompt for Screen Recording permission on first capture.
