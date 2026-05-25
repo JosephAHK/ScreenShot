@@ -191,11 +191,17 @@ final class SelectionOverlayController {
                 }
                 NSLog("ScreenShot: copied to clipboard (\(pb.types?.map { $0.rawValue }.joined(separator: ", ") ?? "none"))")
 
-                do {
-                    let url = try CapturesStore.shared.save(bitmap: composited)
-                    NSLog("ScreenShot: saved \(url.path)")
-                } catch {
-                    NSLog("ScreenShot: save failed: \(error.localizedDescription)")
+                if let writeError = CapturesStore.shared.verifyWritable() {
+                    NSLog("ScreenShot: folder not writable: \(writeError.localizedDescription)")
+                    self.promptForFolderAccess(error: writeError)
+                } else {
+                    do {
+                        let url = try CapturesStore.shared.save(bitmap: composited)
+                        NSLog("ScreenShot: saved \(url.path)")
+                    } catch {
+                        NSLog("ScreenShot: save failed: \(error.localizedDescription)")
+                        self.promptForFolderAccess(error: error)
+                    }
                 }
 
                 NSSound(named: "Glass")?.play()
@@ -206,6 +212,36 @@ final class SelectionOverlayController {
             self.isActive = false
             self.windows.removeAll()
             self.views.removeAll()
+        }
+    }
+
+    private func promptForFolderAccess(error: Error) {
+        NSSound.beep()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "ScreenShot can't save to its captures folder"
+        alert.informativeText = """
+        \(CapturesStore.shared.folderURL.path)
+
+        \(error.localizedDescription)
+
+        macOS may be blocking access to your Desktop. Grant access in \
+        System Settings -> Privacy & Security -> Files and Folders, then try again.
+        """
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Reveal Folder")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn:
+            if let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_FilesAndFolders") {
+                NSWorkspace.shared.open(url)
+            }
+        case .alertSecondButtonReturn:
+            NSWorkspace.shared.activateFileViewerSelecting([CapturesStore.shared.folderURL])
+        default:
+            break
         }
     }
 
@@ -331,6 +367,15 @@ final class SelectionView: NSView {
     /// In-progress annotation while dragging.
     private var annDragStart: CGPoint?
     private var annDragCurrent: CGPoint?
+
+    /// Snapshot of the previous committed selection (and its annotations),
+    /// captured when the user starts a fresh selection drag from `.idle`.
+    /// Used to restore the previous edit if the new selection is too small.
+    private var pendingRestoreSelection: CGRect?
+    private var pendingRestoreAnnotations: [Annotation] = []
+
+    /// Minimum width/height (in points) for a committed selection.
+    private static let minSelectionSide: CGFloat = 20
 
     private let toolbarState = ToolbarState()
     private var toolbarHost: NSHostingView<AnnotationToolbar>?
@@ -539,6 +584,8 @@ final class SelectionView: NSView {
             } else if let sel = localSelection, sel.contains(p) {
                 break
             } else {
+                pendingRestoreSelection = localSelection
+                pendingRestoreAnnotations = annotations
                 annotations.removeAll()
                 localSelection = nil
                 hideToolbar()
@@ -586,11 +633,27 @@ final class SelectionView: NSView {
                     x: min(a.x, b.x), y: min(a.y, b.y),
                     width: abs(a.x - b.x), height: abs(a.y - b.y)
                 )
-                if rect.width >= 4, rect.height >= 4 {
+                let minSide = Self.minSelectionSide
+                if rect.width >= minSide, rect.height >= minSide {
                     localSelection = rect
+                    annotations = []
                     phase = .idle
                     positionToolbar(for: rect)
+                    pendingRestoreSelection = nil
+                    pendingRestoreAnnotations = []
+                } else if let restore = pendingRestoreSelection {
+                    NSLog("ScreenShot: new selection \(rect.width)x\(rect.height) below \(minSide); restoring previous edit")
+                    NSSound.beep()
+                    localSelection = restore
+                    annotations = pendingRestoreAnnotations
+                    phase = .idle
+                    positionToolbar(for: restore)
+                    pendingRestoreSelection = nil
+                    pendingRestoreAnnotations = []
                 } else {
+                    if rect.width > 0 || rect.height > 0 {
+                        NSSound.beep()
+                    }
                     localSelection = nil
                     phase = .awaitingSelection
                 }

@@ -22,6 +22,24 @@ final class CapturesStore: ObservableObject {
         try? FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
     }
 
+    /// Verifies the captures folder exists and is writable.
+    /// Returns nil on success, otherwise a user-facing error describing the failure.
+    func verifyWritable() -> Error? {
+        do {
+            try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        } catch {
+            return error
+        }
+        let probe = folderURL.appendingPathComponent(".write_probe_\(UUID().uuidString)")
+        do {
+            try Data([0x00]).write(to: probe, options: .atomic)
+            try? FileManager.default.removeItem(at: probe)
+            return nil
+        } catch {
+            return error
+        }
+    }
+
     func refresh() {
         ensureFolder()
         let urls = (try? FileManager.default.contentsOfDirectory(
@@ -55,7 +73,11 @@ final class CapturesStore: ObservableObject {
     }
 
     func delete(_ url: URL) {
-        try? FileManager.default.removeItem(at: url)
-        refresh()
+        if let idx = items.firstIndex(of: url) {
+            items.remove(at: idx)
+        }
+        DispatchQueue.global(qos: .utility).async {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 }

@@ -163,9 +163,11 @@ private struct CapturesPopoverView: View {
                     LazyVGrid(columns: columns, spacing: 8) {
                         ForEach(store.items, id: \.self) { url in
                             ThumbView(url: url)
+                                .transition(.scale(scale: 0.6).combined(with: .opacity))
                         }
                     }
                     .padding(10)
+                    .animation(.spring(response: 0.42, dampingFraction: 0.82), value: store.items)
                 }
             }
         }
@@ -200,10 +202,10 @@ private struct ThumbView: View {
                                 handleCopy()
                             }
                             .help("Copy to clipboard")
-                            HoverIconButton(systemName: "arrow.up.forward.app.fill", tint: .white) {
-                                NSWorkspace.shared.open(url)
+                            HoverIconButton(systemName: "trash.fill", tint: .white) {
+                                handleDelete()
                             }
-                            .help("Open in Preview")
+                            .help("Delete")
                         }
                         .padding(.horizontal, 6)
                         .padding(.vertical, 5)
@@ -258,6 +260,7 @@ private struct ThumbView: View {
         .scaleEffect(pressed ? 0.97 : 1.0)
         .animation(.spring(response: 0.18, dampingFraction: 0.7), value: pressed)
         .contentShape(RoundedRectangle(cornerRadius: 6))
+        .onTapGesture(count: 2) { NSWorkspace.shared.open(url) }
         .onHover { hovering = $0 }
         .onDrag {
             let provider = NSItemProvider(contentsOf: url) ?? NSItemProvider()
@@ -272,7 +275,7 @@ private struct ThumbView: View {
             }
             Divider()
             Button("Delete", role: .destructive) {
-                CapturesStore.shared.delete(url)
+                handleDelete()
             }
         }
         .help(url.lastPathComponent)
@@ -296,6 +299,21 @@ private struct ThumbView: View {
             }
         }
     }
+
+    private func handleDelete() {
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            CapturesStore.shared.delete(url)
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            ThumbView.trashSound?.play()
+        }
+    }
+
+    private static let trashSound: NSSound? = {
+        let url = URL(fileURLWithPath:
+            "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/finder/move to trash.aif")
+        return NSSound(contentsOf: url, byReference: true) ?? NSSound(named: "Pop")
+    }()
 
     private func copyToClipboard() {
         guard let img = NSImage(contentsOf: url) else { return }
