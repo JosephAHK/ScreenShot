@@ -386,7 +386,20 @@ final class SelectionView: NSView {
     override func becomeFirstResponder() -> Bool { true }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .crosshair)
+        if usesEditingCursor, let sel = localSelection {
+            addCursorRect(bounds, cursor: .arrow)
+            addCursorRect(sel, cursor: .crosshair)
+        } else {
+            addCursorRect(bounds, cursor: .crosshair)
+        }
+    }
+
+    private var usesEditingCursor: Bool {
+        (phase == .idle || phase == .annotating) && localSelection != nil
+    }
+
+    private func refreshCursorRects() {
+        window?.invalidateCursorRects(for: self)
     }
 
     override func viewDidMoveToWindow() {
@@ -601,6 +614,7 @@ final class SelectionView: NSView {
         selDragCurrent = p
         hideToolbar()
         broadcastInProgress()
+        refreshCursorRects()
         needsDisplay = true
     }
 
@@ -661,6 +675,7 @@ final class SelectionView: NSView {
             selDragStart = nil
             selDragCurrent = nil
             broadcastInProgress()
+            refreshCursorRects()
             needsDisplay = true
 
         case .annotating:
@@ -678,6 +693,7 @@ final class SelectionView: NSView {
             annDragStart = nil
             annDragCurrent = nil
             phase = .idle
+            refreshCursorRects()
             needsDisplay = true
 
         case .awaitingSelection, .idle:

@@ -304,16 +304,23 @@ private struct ThumbView: View {
         withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
             CapturesStore.shared.delete(url)
         }
-        DispatchQueue.global(qos: .userInitiated).async {
-            ThumbView.trashSound?.play()
-        }
+        Self.playTrashSound()
     }
 
-    private static let trashSound: NSSound? = {
-        let url = URL(fileURLWithPath:
-            "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/finder/move to trash.aif")
-        return NSSound(contentsOf: url, byReference: true) ?? NSSound(named: "Pop")
-    }()
+    private static let trashSoundURL = URL(fileURLWithPath:
+        "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/finder/move to trash.aif")
+
+    /// Plays only the initial crumple; the full .aif has a second sfx ~1s later.
+    private static func playTrashSound() {
+        guard let sound = NSSound(contentsOf: trashSoundURL, byReference: false) else {
+            NSSound(named: "Pop")?.play()
+            return
+        }
+        sound.play()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) {
+            sound.stop()
+        }
+    }
 
     private func copyToClipboard() {
         guard let img = NSImage(contentsOf: url) else { return }
