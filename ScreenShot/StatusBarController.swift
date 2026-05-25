@@ -259,6 +259,11 @@ private struct ThumbView: View {
         .animation(.spring(response: 0.18, dampingFraction: 0.7), value: pressed)
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .onHover { hovering = $0 }
+        .onDrag {
+            let provider = NSItemProvider(contentsOf: url) ?? NSItemProvider()
+            provider.suggestedName = url.lastPathComponent
+            return provider
+        }
         .contextMenu {
             Button("Open in Preview") { NSWorkspace.shared.open(url) }
             Button("Copy") { handleCopy() }
