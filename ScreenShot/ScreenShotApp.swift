@@ -28,13 +28,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let overlay = SelectionOverlayController()
         self.overlay = overlay
 
+        self.hotkey = HotkeyManager { [weak overlay] in
+            overlay?.begin()
+        }
+        overlay.setHotkeyManager(hotkey!)
+
         self.statusBar = StatusBarController(onCapture: { [weak overlay] in
             overlay?.begin()
         })
 
-        self.hotkey = HotkeyManager { [weak overlay] in
-            overlay?.begin()
-        }
         do {
             try hotkey?.register()
         } catch {

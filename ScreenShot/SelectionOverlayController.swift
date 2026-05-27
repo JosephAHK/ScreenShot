@@ -37,6 +37,10 @@ final class SelectionOverlayController {
     private var views: [SelectionView] = []
     private var isActive = false
     private var captureInProgress = false
+    private(set) var countdownActive = false
+    var isCaptureInProgress: Bool { captureInProgress }
+    private weak var countdownSourceView: SelectionView?
+    private weak var hotkeyManager: HotkeyManager?
     private var debugAutoKill: DispatchWorkItem?
     private static let debugTimeout: TimeInterval = 30
 
@@ -140,13 +144,62 @@ final class SelectionOverlayController {
     }
 
     func dismiss() {
+        cancelCountdown()
         isActive = false
         captureInProgress = false
+        countdownActive = false
         debugAutoKill?.cancel()
         debugAutoKill = nil
         for w in windows { w.orderOut(nil) }
         windows.removeAll()
         views.removeAll()
+    }
+
+    func cancelCountdown() {
+        countdownActive = false
+        endCountdownInteraction(restoreKey: false)
+        for v in views {
+            v.cancelCountdownIfNeeded()
+        }
+    }
+
+    func setCountdownActive(_ active: Bool) {
+        countdownActive = active
+    }
+
+    func setHotkeyManager(_ hotkey: HotkeyManager) {
+        hotkeyManager = hotkey
+    }
+
+    func beginCountdownInteraction(from view: SelectionView) {
+        countdownSourceView = view
+        for w in windows {
+            w.ignoresMouseEvents = true
+        }
+        do {
+            try hotkeyManager?.registerEscapeHotkey { [weak self] in
+                self?.handleCountdownEscapeHotkey()
+            }
+        } catch {
+            NSLog("ScreenShot: failed to register countdown Esc hotkey: \(error)")
+        }
+    }
+
+    func endCountdownInteraction(restoreKey: Bool = true) {
+        for w in windows {
+            w.ignoresMouseEvents = false
+        }
+        hotkeyManager?.unregisterEscapeHotkey()
+        countdownSourceView = nil
+        guard restoreKey, isActive, let key = windows.first else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        key.makeKeyAndOrderFront(nil)
+        key.makeFirstResponder(key.contentView)
+    }
+
+    private func handleCountdownEscapeHotkey() {
+        guard countdownActive, let source = countdownSourceView else { return }
+        source.cancelCountdownAndRestoreToolbar()
     }
 
     /// Broadcast the in-progress drag rect during a NEW selection (before mouse-up).
@@ -161,6 +214,10 @@ final class SelectionOverlayController {
     }
 
     func copySelection(globalRect: CGRect, annotations: [Annotation], annotationOriginGlobal: CGPoint) {
+        if countdownActive {
+            NSSound.beep()
+            return
+        }
         guard let prepared = prepareCapture(
             globalRect: globalRect,
             annotations: annotations,
@@ -237,6 +294,10 @@ final class SelectionOverlayController {
                 data: ["ocrId": String(ocrId)]
             )
             // #endregion
+            return
+        }
+        if countdownActive {
+            NSSound.beep()
             return
         }
         guard let prepared = prepareCapture(
@@ -573,9 +634,24 @@ final class SelectionView: NSView {
     private var toolbarHost: NSHostingView<AnnotationToolbar>?
     private var toolbarCancellable: AnyCancellable?
 
+    private var countdownRemaining: Int?
+    private var countdownTask: Task<Void, Never>?
+    private static let countdownSeconds = 5
+
     override var isFlipped: Bool { false }
     override var acceptsFirstResponder: Bool { true }
     override func becomeFirstResponder() -> Bool { true }
+
+    func allowsMousePassThrough(at localPoint: NSPoint) -> Bool {
+        countdownRemaining != nil && localSelection?.contains(localPoint) == true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if allowsMousePassThrough(at: point) {
+            return nil
+        }
+        return super.hitTest(point)
+    }
 
     override func resetCursorRects() {
         if usesEditingCursor, let sel = localSelection {
@@ -601,6 +677,7 @@ final class SelectionView: NSView {
                 state: toolbarState,
                 onUndo: { [weak self] in self?.undoLastAnnotation() },
                 onCopy: { [weak self] in self?.commitCopy() },
+                onTimedCopy: { [weak self] in self?.commitTimedCopy() },
                 onCopyText: { [weak self] in self?.commitCopyText() }
             )
             let host = NSHostingView(rootView: root)
@@ -642,6 +719,9 @@ final class SelectionView: NSView {
                     start: s, end: c
                 )
                 drawAnnotation(preview)
+            }
+            if let remaining = countdownRemaining {
+                drawCountdown(remaining, below: sel)
             }
         } else {
             drawCenteredHint("Drag to select  ·  ⌘C / ↵ to copy  ·  Esc to cancel")
@@ -749,6 +829,36 @@ final class SelectionView: NSView {
         attr.draw(at: CGPoint(x: box.minX + pad, y: box.minY + pad / 2))
     }
 
+    private func drawCountdown(_ value: Int, below selection: CGRect) {
+        let text = "\(value)"
+        let font = NSFont.systemFont(ofSize: 28, weight: .semibold)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.white
+        ]
+        let attr = NSAttributedString(string: text, attributes: attrs)
+        let textSize = attr.size()
+        let boxSide: CGFloat = max(44, max(textSize.width, textSize.height) + 14)
+        var x = selection.midX - boxSide / 2
+        var y = selection.minY - boxSide - 12
+        if y < bounds.minY + 4 {
+            y = selection.maxY + 12
+            if y + boxSide > bounds.maxY - 4 {
+                y = max(bounds.minY + 4, selection.maxY - boxSide - 12)
+            }
+        }
+        x = min(max(x, bounds.minX + 4), bounds.maxX - boxSide - 4)
+
+        let box = CGRect(x: x, y: y, width: boxSide, height: boxSide)
+        NSColor.black.withAlphaComponent(0.75).setFill()
+        NSBezierPath(rect: box).fill()
+        let textOrigin = CGPoint(
+            x: x + (boxSide - textSize.width) / 2,
+            y: y + (boxSide - textSize.height) / 2
+        )
+        attr.draw(at: textOrigin)
+    }
+
     // MARK: - Toolbar layout
 
     private func positionToolbar(for selection: CGRect) {
@@ -775,6 +885,7 @@ final class SelectionView: NSView {
     // MARK: - Mouse
 
     override func mouseDown(with event: NSEvent) {
+        if countdownRemaining != nil { return }
         let p = convert(event.locationInWindow, from: nil)
         controller?.bumpAutoKill()
 
@@ -937,6 +1048,60 @@ final class SelectionView: NSView {
         }
     }
 
+    func cancelCountdownIfNeeded() {
+        countdownTask?.cancel()
+        countdownTask = nil
+        countdownRemaining = nil
+        needsDisplay = true
+    }
+
+    fileprivate func commitTimedCopy() {
+        guard localSelection != nil else {
+            NSSound.beep()
+            return
+        }
+        guard countdownRemaining == nil else {
+            NSSound.beep()
+            return
+        }
+        guard let controller, !controller.countdownActive, !controller.isCaptureInProgress else {
+            NSSound.beep()
+            return
+        }
+
+        hideToolbar()
+        toolbarState.tool = nil
+        controller.setCountdownActive(true)
+        controller.beginCountdownInteraction(from: self)
+        controller.bumpAutoKill()
+
+        countdownTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if Task.isCancelled {
+                    self.countdownRemaining = nil
+                    self.countdownTask = nil
+                    self.controller?.setCountdownActive(false)
+                    self.controller?.endCountdownInteraction()
+                    self.needsDisplay = true
+                }
+            }
+            for remaining in stride(from: Self.countdownSeconds, through: 1, by: -1) {
+                if Task.isCancelled { return }
+                self.countdownRemaining = remaining
+                self.needsDisplay = true
+                self.controller?.bumpAutoKill()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { return }
+            }
+            self.countdownRemaining = nil
+            self.countdownTask = nil
+            self.controller?.setCountdownActive(false)
+            self.controller?.endCountdownInteraction(restoreKey: false)
+            self.commitCopy()
+        }
+    }
+
     fileprivate func commitCopy() {
         guard let sel = localSelection else {
             NSSound.beep()
@@ -982,10 +1147,26 @@ final class SelectionView: NSView {
 
     // MARK: - Keys
 
+    func cancelCountdownAndRestoreToolbar() {
+        countdownTask?.cancel()
+        countdownTask = nil
+        countdownRemaining = nil
+        controller?.setCountdownActive(false)
+        controller?.endCountdownInteraction()
+        if let sel = localSelection {
+            positionToolbar(for: sel)
+        }
+        needsDisplay = true
+    }
+
     override func keyDown(with event: NSEvent) {
         controller?.bumpAutoKill()
         let chars = event.charactersIgnoringModifiers ?? ""
         if event.keyCode == 53 { // Esc
+            if countdownRemaining != nil {
+                cancelCountdownAndRestoreToolbar()
+                return
+            }
             controller?.cancel()
             return
         }
@@ -1010,25 +1191,36 @@ private struct AnnotationToolbar: View {
     @ObservedObject var state: ToolbarState
     let onUndo: () -> Void
     let onCopy: () -> Void
+    let onTimedCopy: () -> Void
     let onCopyText: () -> Void
 
     var body: some View {
+        HStack(spacing: 8) {
+            ToolbarBlob {
+                ToolButton(systemName: "arrow.up.right", help: "Arrow", isOn: state.tool == .arrow) {
+                    state.tool = state.tool == .arrow ? nil : .arrow
+                }
+                ToolButton(systemName: "rectangle", help: "Rectangle", isOn: state.tool == .rectangle) {
+                    state.tool = state.tool == .rectangle ? nil : .rectangle
+                }
+                ToolButton(systemName: "arrow.uturn.backward", help: "Undo (⌘Z)", isOn: false, action: onUndo)
+            }
+            ToolbarBlob {
+                ToolButton(systemName: "doc.on.clipboard.fill", help: "Copy (⌘C / ↵)", isOn: false, action: onCopy)
+                ToolButton(systemName: "timer", help: "Timed capture (5s)", isOn: false, action: onTimedCopy)
+                ToolButton(systemName: "text.viewfinder", help: "Copy text (OCR)", isOn: false, action: onCopyText)
+            }
+        }
+        .fixedSize()
+    }
+}
+
+private struct ToolbarBlob<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
         HStack(spacing: 4) {
-            ToolButton(systemName: "arrow.up.right", isOn: state.tool == .arrow) {
-                state.tool = state.tool == .arrow ? nil : .arrow
-            }
-            .help("Arrow")
-            ToolButton(systemName: "rectangle", isOn: state.tool == .rectangle) {
-                state.tool = state.tool == .rectangle ? nil : .rectangle
-            }
-            .help("Rectangle")
-            Divider().frame(height: 18)
-            ToolButton(systemName: "arrow.uturn.backward", isOn: false, action: onUndo)
-                .help("Undo (⌘Z)")
-            ToolButton(systemName: "doc.on.clipboard.fill", isOn: false, action: onCopy)
-                .help("Copy (⌘C / ↵)")
-            ToolButton(systemName: "text.viewfinder", isOn: false, action: onCopyText)
-                .help("Copy text (OCR)")
+            content
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -1040,12 +1232,12 @@ private struct AnnotationToolbar: View {
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
         )
-        .fixedSize()
     }
 }
 
 private struct ToolButton: View {
     let systemName: String
+    let help: String
     let isOn: Bool
     let action: () -> Void
     @State private var hovering = false
@@ -1062,6 +1254,36 @@ private struct ToolButton: View {
                 )
         }
         .buttonStyle(.plain)
+        .help(help)
         .onHover { hovering = $0 }
+        .overlay(alignment: .top) {
+            if hovering {
+                TooltipLabel(text: help)
+                    .fixedSize()
+                    .offset(y: -30)
+                    .zIndex(1)
+            }
+        }
+    }
+}
+
+private struct TooltipLabel: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.black.opacity(0.82))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+            )
+            .allowsHitTesting(false)
     }
 }

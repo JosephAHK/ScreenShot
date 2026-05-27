@@ -21,7 +21,8 @@
 - **Global F4 hotkey** via Carbon `RegisterEventHotKey` (no Accessibility permission required).
 - **Drag-to-select with live dim cutout** — the rest of every display fades to ~55 % black while the selection rectangle stays bright, with a `W × H` badge near it.
 - **Pixel-perfect capture** via `ScreenCaptureKit` (`SCScreenshotManager` + `sourceRect`). The selection is snapped to the display's physical pixel grid so the captured bitmap is byte-identical 1:1 to what was on screen — no resampling, no half-pixel blur on Retina.
-- **In-overlay annotation toolbar** appears under the selection after mouse-up — Arrow, Rectangle, Undo (⌘Z), Copy. Annotations are composited onto the screenshot in a `CGBitmapContext` at native pixel density before clipboard / save.
+- **In-overlay annotation toolbar** appears under the selection after mouse-up — Arrow, Rectangle, Undo (⌘Z), Copy, **Timed capture (5s)**. Annotations are composited onto the screenshot in a `CGBitmapContext` at native pixel density before clipboard / save.
+- **Timed capture** — tap the timer button to count down from 5 under the selection (mouse passes through the bright cutout so you can hover menus); then capture runs like an instant copy.
 - **Auto-save** to `~/Desktop/ScreenShot Captures/Screenshot YYYY-MM-DD at HH.MM.SS.png` on every copy.
 - **Menu bar flyout** (left-click the camera icon) — `NSPopover` hosting a SwiftUI 3-column 1:1 grid of every screenshot in the folder, sorted newest-first. Hover a thumb to reveal Copy / Open-in-Preview buttons; clicking Copy plays a Tink and shows a spring-animated "Copied" check overlay.
 - **Right-click status item menu** — Capture, Open Captures Folder, Launch at Login toggle (`SMAppService.mainApp.register()`), Quit.
@@ -62,8 +63,9 @@ open build/ScreenShot.app
 | **F4** | Begin region selection |
 | Drag | Define the region (kept bright, rest dimmed) |
 | **↵ / ⌘C** | Capture, annotate-composite, copy + save |
+| **Timer (toolbar)** | 5-second countdown, then capture (hover inside selection during countdown) |
 | **⌘Z** | Undo last annotation |
-| **Esc** | Cancel overlay |
+| **Esc** | Cancel countdown if active; otherwise cancel overlay |
 
 ## Permissions
 
