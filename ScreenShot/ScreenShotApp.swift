@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         if !CGPreflightScreenCaptureAccess() {
+            NSApp.activate(ignoringOtherApps: true)
             CGRequestScreenCaptureAccess()
         }
 

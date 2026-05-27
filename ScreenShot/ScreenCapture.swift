@@ -26,22 +26,58 @@ final class ScreenCapture {
         return desc.contains("tcc") || desc.contains("declined") || desc.contains("not authorized") || ns.code == -3801
     }
 
+    /// Requests Screen Recording access if needed. Activates the app so macOS can show
+    /// the system prompt, then waits briefly for the user to respond.
+    func ensureAccess(timeout: TimeInterval = 30) async -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+
+        NSApp.activate(ignoringOtherApps: true)
+        CGRequestScreenCaptureAccess()
+
+        var waited: TimeInterval = 0
+        while !CGPreflightScreenCaptureAccess() {
+            if waited >= timeout { return false }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            waited += 0.5
+        }
+        return true
+    }
+
     /// `globalRect` is in AppKit global screen coordinates (origin at bottom-left of
     /// the primary display, Y-up). Returns a CGImage of just that rectangle.
     func captureRect(_ globalRect: CGRect) async throws -> CGImage {
+        // #region agent log
+        DebugLog.write(
+            hypothesisId: "task",
+            location: "ScreenCapture.swift:captureRect",
+            message: "captureRect entry",
+            data: ["rect": NSStringFromRect(globalRect)]
+        )
+        // #endregion
         guard globalRect.width >= 1, globalRect.height >= 1 else {
             throw CaptureError.emptyRegion
         }
 
-        if !CGPreflightScreenCaptureAccess() {
-            CGRequestScreenCaptureAccess()
-            var waited: Double = 0
-            while !CGPreflightScreenCaptureAccess() {
-                if waited > 60 { throw CaptureError.permissionDenied }
-                try await Task.sleep(nanoseconds: 500_000_000)
-                waited += 0.5
-            }
-        }
+        let hasAccess = await ensureAccess()
+        // #region agent log
+        DebugLog.write(
+            hypothesisId: "task",
+            location: "ScreenCapture.swift:captureRect",
+            message: "preflight screen capture access",
+            data: ["granted": String(hasAccess)]
+        )
+        // #endregion
+
+        guard hasAccess else { throw CaptureError.permissionDenied }
+
+        // #region agent log
+        DebugLog.write(
+            hypothesisId: "task",
+            location: "ScreenCapture.swift:captureRect",
+            message: "screen capture access granted",
+            data: [:]
+        )
+        // #endregion
 
         let mid = CGPoint(x: globalRect.midX, y: globalRect.midY)
         guard let nsScreen = NSScreen.screens.first(where: { $0.frame.contains(mid) }) ?? NSScreen.main else {
@@ -77,6 +113,15 @@ final class ScreenCapture {
                 throw error
             }
         }
+
+        // #region agent log
+        DebugLog.write(
+            hypothesisId: "task",
+            location: "ScreenCapture.swift:captureRect",
+            message: "shareable content loaded",
+            data: ["displayCount": String(content.displays.count)]
+        )
+        // #endregion
 
         guard let display = content.displays.first(where: { $0.displayID == displayID }) ?? content.displays.first else {
             throw CaptureError.noDisplay
@@ -135,6 +180,18 @@ final class ScreenCapture {
                 throw error
             }
         }
+
+        // #region agent log
+        DebugLog.write(
+            hypothesisId: "task",
+            location: "ScreenCapture.swift:captureRect",
+            message: "captureImage complete",
+            data: [
+                "width": String(cgImage.width),
+                "height": String(cgImage.height),
+            ]
+        )
+        // #endregion
 
         return cgImage
     }

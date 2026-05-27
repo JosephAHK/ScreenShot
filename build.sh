@@ -28,13 +28,16 @@ swiftc \
   -framework ScreenCaptureKit \
   -framework Carbon \
   -framework ServiceManagement \
+  -framework Vision \
   -o "$APP_BUNDLE/Contents/MacOS/$APP_NAME" \
   "$ROOT/ScreenShot/ScreenShotApp.swift" \
   "$ROOT/ScreenShot/StatusBarController.swift" \
   "$ROOT/ScreenShot/HotkeyManager.swift" \
   "$ROOT/ScreenShot/SelectionOverlayController.swift" \
   "$ROOT/ScreenShot/ScreenCapture.swift" \
-  "$ROOT/ScreenShot/CapturesStore.swift"
+  "$ROOT/ScreenShot/CapturesStore.swift" \
+  "$ROOT/ScreenShot/OCRService.swift" \
+  "$ROOT/ScreenShot/DebugLog.swift"
 
 cp "$ROOT/ScreenShot/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME" "$APP_BUNDLE/Contents/Info.plist"

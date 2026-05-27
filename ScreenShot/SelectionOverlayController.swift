@@ -36,6 +36,7 @@ final class SelectionOverlayController {
     private var windows: [NSWindow] = []
     private var views: [SelectionView] = []
     private var isActive = false
+    private var captureInProgress = false
     private var debugAutoKill: DispatchWorkItem?
     private static let debugTimeout: TimeInterval = 30
 
@@ -62,6 +63,17 @@ final class SelectionOverlayController {
             dismiss()
             return
         }
+        Task { @MainActor in
+            let granted = await ScreenCapture.shared.ensureAccess()
+            guard granted else {
+                self.promptForScreenRecordingAccess()
+                return
+            }
+            self.startOverlay()
+        }
+    }
+
+    private func startOverlay() {
         isActive = true
         windows.removeAll()
         views.removeAll()
@@ -129,6 +141,7 @@ final class SelectionOverlayController {
 
     func dismiss() {
         isActive = false
+        captureInProgress = false
         debugAutoKill?.cancel()
         debugAutoKill = nil
         for w in windows { w.orderOut(nil) }
@@ -148,37 +161,21 @@ final class SelectionOverlayController {
     }
 
     func copySelection(globalRect: CGRect, annotations: [Annotation], annotationOriginGlobal: CGPoint) {
-        guard globalRect.width >= 4, globalRect.height >= 4 else {
-            NSSound.beep()
-            return
-        }
-        let captureRect = globalRect
-        debugAutoKill?.cancel()
-        debugAutoKill = nil
-        for w in windows { w.orderOut(nil) }
-        NSLog("ScreenShot: copying region \(captureRect) with \(annotations.count) annotation(s)")
+        guard let prepared = prepareCapture(
+            globalRect: globalRect,
+            annotations: annotations,
+            annotationOriginGlobal: annotationOriginGlobal
+        ) else { return }
 
-        // Translate annotations from "local view coords" into "selection-relative
-        // points" (origin at selection bottom-left). Both are in points and Y-up.
-        let dx = annotationOriginGlobal.x - captureRect.origin.x
-        let dy = annotationOriginGlobal.y - captureRect.origin.y
-        let annotationsInSelectionSpace: [Annotation] = annotations.map { ann in
-            var a = ann
-            a.start = CGPoint(x: ann.start.x + dx, y: ann.start.y + dy)
-            a.end = CGPoint(x: ann.end.x + dx, y: ann.end.y + dy)
-            return a
-        }
+        NSLog("ScreenShot: copying region \(prepared.captureRect) with \(annotations.count) annotation(s)")
 
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 120_000_000)
             do {
-                let cgImage = try await ScreenCapture.shared.captureRect(captureRect)
-                NSLog("ScreenShot: capture ok \(cgImage.width)x\(cgImage.height)")
-
+                let cgImage = try await self.captureAfterOverlayHidden(prepared.captureRect, ocrId: 0)
                 let composited = self.composite(
                     cgImage: cgImage,
-                    selectionSizePoints: captureRect.size,
-                    annotations: annotationsInSelectionSpace
+                    selectionSizePoints: prepared.captureRect.size,
+                    annotations: prepared.annotationsInSelectionSpace
                 )
 
                 let pb = NSPasteboard.general
@@ -207,11 +204,206 @@ final class SelectionOverlayController {
                 NSSound(named: "Glass")?.play()
             } catch {
                 NSLog("ScreenShot: capture failed: \(error.localizedDescription)")
-                NSSound.beep()
+                if case ScreenCapture.CaptureError.permissionDenied = error {
+                    self.promptForScreenRecordingAccess()
+                } else {
+                    NSSound.beep()
+                }
             }
-            self.isActive = false
-            self.windows.removeAll()
-            self.views.removeAll()
+            self.finishCaptureSession()
+        }
+    }
+
+    func copyTextSelection(globalRect: CGRect, annotations: [Annotation], annotationOriginGlobal: CGPoint) {
+        // #region agent log
+        let ocrId = DebugLog.nextOcrCopyId()
+        DebugLog.write(
+            hypothesisId: "C",
+            location: "SelectionOverlayController.swift:copyTextSelection",
+            message: "copyTextSelection called",
+            data: [
+                "ocrId": String(ocrId),
+                "captureInProgress": String(captureInProgress),
+                "rect": NSStringFromRect(globalRect),
+            ]
+        )
+        // #endregion
+        guard !captureInProgress else {
+            // #region agent log
+            DebugLog.write(
+                hypothesisId: "C",
+                location: "SelectionOverlayController.swift:copyTextSelection",
+                message: "blocked duplicate capture",
+                data: ["ocrId": String(ocrId)]
+            )
+            // #endregion
+            return
+        }
+        guard let prepared = prepareCapture(
+            globalRect: globalRect,
+            annotations: annotations,
+            annotationOriginGlobal: annotationOriginGlobal
+        ) else { return }
+
+        NSLog("ScreenShot: OCR copy region \(prepared.captureRect)")
+
+        Task { @MainActor in
+            // #region agent log
+            DebugLog.write(
+                hypothesisId: "task",
+                location: "SelectionOverlayController.swift:task",
+                message: "ocr task started",
+                data: ["ocrId": String(ocrId)]
+            )
+            // #endregion
+            do {
+                let cgImage = try await self.captureAfterOverlayHidden(prepared.captureRect, ocrId: ocrId)
+                // #region agent log
+                DebugLog.write(
+                    hypothesisId: "task",
+                    location: "SelectionOverlayController.swift:capture",
+                    message: "capture complete",
+                    data: [
+                        "ocrId": String(ocrId),
+                        "width": String(cgImage.width),
+                        "height": String(cgImage.height),
+                    ]
+                )
+                // #endregion
+                let text = try await Task.detached(priority: .userInitiated) {
+                    try OCRService.recognizeText(in: cgImage)
+                }.value
+                guard !text.isEmpty else {
+                    NSLog("ScreenShot: OCR found no text in \(cgImage.width)x\(cgImage.height) image")
+                    NSSound.beep()
+                    self.finishCaptureSession()
+                    return
+                }
+
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(text, forType: .string)
+                // #region agent log
+                DebugLog.write(
+                    hypothesisId: "C,E",
+                    location: "SelectionOverlayController.swift:pasteboard",
+                    message: "pasteboard written",
+                    data: [
+                        "ocrId": String(ocrId),
+                        "lineCount": String(text.components(separatedBy: "\n").count),
+                        "charCount": String(text.count),
+                        "clipboardFingerprint": DebugLog.fingerprint(String(text.prefix(120))),
+                    ]
+                )
+                // #endregion
+                NSLog("ScreenShot: copied OCR text to clipboard (\(text.count) chars): \(text.prefix(80))")
+                NSSound(named: "Tink")?.play()
+            } catch {
+                NSLog("ScreenShot: OCR copy failed: \(error.localizedDescription)")
+                // #region agent log
+                DebugLog.write(
+                    hypothesisId: "task",
+                    location: "SelectionOverlayController.swift:error",
+                    message: "ocr task failed",
+                    data: [
+                        "ocrId": String(ocrId),
+                        "error": error.localizedDescription,
+                    ]
+                )
+                // #endregion
+                if case ScreenCapture.CaptureError.permissionDenied = error {
+                    self.promptForScreenRecordingAccess()
+                } else {
+                    NSSound.beep()
+                }
+            }
+            self.finishCaptureSession()
+        }
+    }
+
+    private struct PreparedCapture {
+        let captureRect: CGRect
+        let annotationsInSelectionSpace: [Annotation]
+    }
+
+    private func prepareCapture(
+        globalRect: CGRect,
+        annotations: [Annotation],
+        annotationOriginGlobal: CGPoint
+    ) -> PreparedCapture? {
+        guard !captureInProgress else { return nil }
+        guard globalRect.width >= 4, globalRect.height >= 4 else {
+            NSSound.beep()
+            return nil
+        }
+        captureInProgress = true
+        debugAutoKill?.cancel()
+        debugAutoKill = nil
+        for w in windows { w.orderOut(nil) }
+
+        let dx = annotationOriginGlobal.x - globalRect.origin.x
+        let dy = annotationOriginGlobal.y - globalRect.origin.y
+        let annotationsInSelectionSpace: [Annotation] = annotations.map { ann in
+            var a = ann
+            a.start = CGPoint(x: ann.start.x + dx, y: ann.start.y + dy)
+            a.end = CGPoint(x: ann.end.x + dx, y: ann.end.y + dy)
+            return a
+        }
+        return PreparedCapture(
+            captureRect: globalRect,
+            annotationsInSelectionSpace: annotationsInSelectionSpace
+        )
+    }
+
+    private func captureAfterOverlayHidden(_ captureRect: CGRect, ocrId: Int) async throws -> CGImage {
+        // #region agent log
+        DebugLog.write(
+            hypothesisId: "task",
+            location: "SelectionOverlayController.swift:capture",
+            message: "capture sleep start",
+            data: ["ocrId": String(ocrId)]
+        )
+        // #endregion
+        try await Task.sleep(nanoseconds: 120_000_000)
+        // #region agent log
+        DebugLog.write(
+            hypothesisId: "task",
+            location: "SelectionOverlayController.swift:capture",
+            message: "capture screencapture start",
+            data: ["ocrId": String(ocrId)]
+        )
+        // #endregion
+        let cgImage = try await ScreenCapture.shared.captureRect(captureRect)
+        NSLog("ScreenShot: capture ok \(cgImage.width)x\(cgImage.height)")
+        return cgImage
+    }
+
+    private func finishCaptureSession() {
+        captureInProgress = false
+        isActive = false
+        windows.removeAll()
+        views.removeAll()
+    }
+
+    private func promptForScreenRecordingAccess() {
+        NSSound.beep()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Screen Recording permission required"
+        alert.informativeText = """
+        ScreenShot needs Screen Recording access to capture your screen and save screenshots.
+
+        Open System Settings → Privacy & Security → Screen Recording, enable ScreenShot, \
+        then press F4 to try again.
+        """
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture") {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 
@@ -408,7 +600,8 @@ final class SelectionView: NSView {
             let root = AnnotationToolbar(
                 state: toolbarState,
                 onUndo: { [weak self] in self?.undoLastAnnotation() },
-                onCopy: { [weak self] in self?.commitCopy() }
+                onCopy: { [weak self] in self?.commitCopy() },
+                onCopyText: { [weak self] in self?.commitCopyText() }
             )
             let host = NSHostingView(rootView: root)
             host.translatesAutoresizingMaskIntoConstraints = true
@@ -762,6 +955,31 @@ final class SelectionView: NSView {
         )
     }
 
+    fileprivate func commitCopyText() {
+        // #region agent log
+        DebugLog.write(
+            hypothesisId: "C",
+            location: "SelectionOverlayController.swift:commitCopyText",
+            message: "commitCopyText button action"
+        )
+        // #endregion
+        guard let sel = localSelection else {
+            NSSound.beep()
+            return
+        }
+        let global = CGRect(
+            x: sel.origin.x + screenOrigin.x,
+            y: sel.origin.y + screenOrigin.y,
+            width: sel.width, height: sel.height
+        )
+        let originGlobal = CGPoint(x: screenOrigin.x, y: screenOrigin.y)
+        controller?.copyTextSelection(
+            globalRect: global,
+            annotations: annotations,
+            annotationOriginGlobal: originGlobal
+        )
+    }
+
     // MARK: - Keys
 
     override func keyDown(with event: NSEvent) {
@@ -792,6 +1010,7 @@ private struct AnnotationToolbar: View {
     @ObservedObject var state: ToolbarState
     let onUndo: () -> Void
     let onCopy: () -> Void
+    let onCopyText: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
@@ -808,6 +1027,8 @@ private struct AnnotationToolbar: View {
                 .help("Undo (⌘Z)")
             ToolButton(systemName: "doc.on.clipboard.fill", isOn: false, action: onCopy)
                 .help("Copy (⌘C / ↵)")
+            ToolButton(systemName: "text.viewfinder", isOn: false, action: onCopyText)
+                .help("Copy text (OCR)")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
