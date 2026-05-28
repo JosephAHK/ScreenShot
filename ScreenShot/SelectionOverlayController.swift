@@ -29,6 +29,7 @@ struct Annotation {
 @MainActor
 final class ToolbarState: ObservableObject {
     @Published var tool: AnnotationTool? = nil
+    @Published var undoFlash = false
 }
 
 @MainActor
@@ -1041,10 +1042,19 @@ final class SelectionView: NSView {
 
     // MARK: - Toolbar actions
 
-    private func undoLastAnnotation() {
-        if !annotations.isEmpty {
-            annotations.removeLast()
-            needsDisplay = true
+    @discardableResult
+    private func undoLastAnnotation() -> Bool {
+        guard !annotations.isEmpty else { return false }
+        annotations.removeLast()
+        needsDisplay = true
+        return true
+    }
+
+    private func flashUndoButton() {
+        toolbarState.undoFlash = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            self?.toolbarState.undoFlash = false
         }
     }
 
@@ -1178,8 +1188,29 @@ final class SelectionView: NSView {
         }
         // Cmd+Z undo annotation
         if event.modifierFlags.contains(.command), chars.lowercased() == "z" {
-            undoLastAnnotation()
+            if undoLastAnnotation() {
+                flashUndoButton()
+            }
             return
+        }
+        if countdownRemaining == nil,
+           localSelection != nil,
+           phase == .idle || phase == .annotating,
+           !event.modifierFlags.contains(.command) {
+            switch chars.lowercased() {
+            case "a":
+                toolbarState.tool = .arrow
+                refreshCursorRects()
+                needsDisplay = true
+                return
+            case "r":
+                toolbarState.tool = .rectangle
+                refreshCursorRects()
+                needsDisplay = true
+                return
+            default:
+                break
+            }
         }
         super.keyDown(with: event)
     }
@@ -1197,13 +1228,19 @@ private struct AnnotationToolbar: View {
     var body: some View {
         HStack(spacing: 8) {
             ToolbarBlob {
-                ToolButton(systemName: "arrow.up.right", help: "Arrow", isOn: state.tool == .arrow) {
+                ToolButton(systemName: "arrow.up.right", help: "Arrow (A)", isOn: state.tool == .arrow) {
                     state.tool = state.tool == .arrow ? nil : .arrow
                 }
-                ToolButton(systemName: "rectangle", help: "Rectangle", isOn: state.tool == .rectangle) {
+                ToolButton(systemName: "rectangle", help: "Rectangle (R)", isOn: state.tool == .rectangle) {
                     state.tool = state.tool == .rectangle ? nil : .rectangle
                 }
-                ToolButton(systemName: "arrow.uturn.backward", help: "Undo (⌘Z)", isOn: false, action: onUndo)
+                ToolButton(
+                    systemName: "arrow.uturn.backward",
+                    help: "Undo (⌘Z)",
+                    isOn: false,
+                    isFlashing: state.undoFlash,
+                    action: onUndo
+                )
             }
             ToolbarBlob {
                 ToolButton(systemName: "doc.on.clipboard.fill", help: "Copy (⌘C / ↵)", isOn: false, action: onCopy)
@@ -1239,18 +1276,21 @@ private struct ToolButton: View {
     let systemName: String
     let help: String
     let isOn: Bool
+    var isFlashing: Bool = false
     let action: () -> Void
     @State private var hovering = false
+
+    private var highlighted: Bool { isOn || isFlashing }
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isOn ? Color.white : Color.primary)
+                .foregroundStyle(highlighted ? Color.white : Color.primary)
                 .frame(width: 30, height: 26)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(isOn ? Color.accentColor : (hovering ? Color.primary.opacity(0.12) : Color.clear))
+                        .fill(highlighted ? Color.accentColor : (hovering ? Color.primary.opacity(0.12) : Color.clear))
                 )
         }
         .buttonStyle(.plain)

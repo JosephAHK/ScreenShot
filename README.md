@@ -64,6 +64,7 @@ open build/ScreenShot.app
 | Drag | Define the region (kept bright, rest dimmed) |
 | **↵ / ⌘C** | Capture, annotate-composite, copy + save |
 | **Timer (toolbar)** | 5-second countdown, then capture (hover inside selection during countdown) |
+| **A / R** | Arrow / Rectangle annotation tool (with selection) |
 | **⌘Z** | Undo last annotation |
 | **Esc** | Cancel countdown if active; otherwise cancel overlay |
 
