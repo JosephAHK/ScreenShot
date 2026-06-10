@@ -6,6 +6,7 @@ final class HotkeyManager {
     private var eventHandler: EventHandlerRef?
     private var escapeEventHandler: EventHandlerRef?
     private var hotKeyRef: EventHotKeyRef?
+    private var ctrlPHotKeyRef: EventHotKeyRef?
     private var escapeHotKeyRef: EventHotKeyRef?
     private let callback: () -> Void
     private static var sharedCallback: (() -> Void)?
@@ -54,7 +55,21 @@ final class HotkeyManager {
         )
         guard registerStatus == noErr else {
             throw NSError(domain: "ScreenShot.Hotkey", code: Int(registerStatus),
-                          userInfo: [NSLocalizedDescriptionKey: "RegisterEventHotKey failed (\(registerStatus))"])
+                          userInfo: [NSLocalizedDescriptionKey: "RegisterEventHotKey F4 failed (\(registerStatus))"])
+        }
+
+        let ctrlPHotKeyID = EventHotKeyID(signature: OSType(0x53534854 /* 'SSHT' */), id: 3)
+        let ctrlPStatus = RegisterEventHotKey(
+            UInt32(kVK_ANSI_P),
+            UInt32(controlKey),
+            ctrlPHotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &ctrlPHotKeyRef
+        )
+        guard ctrlPStatus == noErr else {
+            throw NSError(domain: "ScreenShot.Hotkey", code: Int(ctrlPStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "RegisterEventHotKey Ctrl+P failed (\(ctrlPStatus))"])
         }
     }
 
@@ -124,6 +139,7 @@ final class HotkeyManager {
         if let escapeHotKeyRef { UnregisterEventHotKey(escapeHotKeyRef) }
         if let escapeEventHandler { RemoveEventHandler(escapeEventHandler) }
         if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
+        if let ctrlPHotKeyRef { UnregisterEventHotKey(ctrlPHotKeyRef) }
         if let eventHandler { RemoveEventHandler(eventHandler) }
     }
 }

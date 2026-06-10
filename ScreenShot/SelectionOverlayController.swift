@@ -8,10 +8,28 @@ final class OverlayWindow: NSWindow {
     override var acceptsFirstResponder: Bool { true }
 }
 
-enum AnnotationTool: String { case arrow, rectangle }
+enum AnnotationTool: String { case pointer, arrow, rectangle, focusBlur }
+
+extension AnnotationTool {
+    var isDrawingTool: Bool {
+        switch self {
+        case .pointer: return false
+        case .arrow, .rectangle, .focusBlur: return true
+        }
+    }
+
+    var annotationKind: Annotation.Kind? {
+        switch self {
+        case .pointer: return nil
+        case .arrow: return .arrow
+        case .rectangle: return .rectangle
+        case .focusBlur: return .focusBlur
+        }
+    }
+}
 
 struct Annotation {
-    enum Kind { case arrow, rectangle }
+    enum Kind { case arrow, rectangle, focusBlur }
     let kind: Kind
     /// Local view coords (Y-up), relative to the SelectionView the annotation lives in.
     var start: CGPoint
@@ -24,6 +42,23 @@ struct Annotation {
             height: abs(end.y - start.y)
         )
     }
+}
+
+private enum FocusDimStyle {
+    /// Opacity of the black overlay applied outside the focus rectangle.
+    static let dimOpacity: CGFloat = 0.48
+}
+
+private enum AnnotationStrokeStyle {
+    static let rectangleLineWidth: CGFloat = 6
+    static let arrowShaftLineWidth: CGFloat = 7
+}
+
+private enum ActiveControlPoint {
+    case rectCorner(Int)
+    case arrowStart
+    case arrowEnd
+    case move
 }
 
 @MainActor
@@ -504,13 +539,27 @@ final class SelectionOverlayController {
         selectionSizePoints: CGSize,
         annotations: [Annotation]
     ) -> NSBitmapImageRep {
-        if annotations.isEmpty {
+        let strokeAnnotations = annotations.filter { $0.kind != .focusBlur }
+        let focusBlurAnnotations = annotations.filter { $0.kind == .focusBlur }
+
+        var workingImage = cgImage
+        for ann in focusBlurAnnotations {
+            if let updated = applyFocusDim(
+                to: workingImage,
+                focusRectPoints: ann.rect,
+                selectionSizePoints: selectionSizePoints
+            ) {
+                workingImage = updated
+            }
+        }
+
+        if strokeAnnotations.isEmpty, focusBlurAnnotations.isEmpty {
             return NSBitmapImageRep(cgImage: cgImage)
         }
 
-        let pxW = cgImage.width
-        let pxH = cgImage.height
-        let colorSpace = cgImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let pxW = workingImage.width
+        let pxH = workingImage.height
+        let colorSpace = workingImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
         let bitmapInfo: UInt32 = CGImageAlphaInfo.premultipliedLast.rawValue
 
         guard let ctx = CGContext(
@@ -523,11 +572,19 @@ final class SelectionOverlayController {
             bitmapInfo: bitmapInfo
         ) else {
             NSLog("ScreenShot: composite ctx failed; falling back to raw image")
-            return NSBitmapImageRep(cgImage: cgImage)
+            return NSBitmapImageRep(cgImage: workingImage)
         }
 
         ctx.interpolationQuality = .high
-        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: pxW, height: pxH))
+        ctx.draw(workingImage, in: CGRect(x: 0, y: 0, width: pxW, height: pxH))
+
+        guard !strokeAnnotations.isEmpty else {
+            guard let result = ctx.makeImage() else {
+                return NSBitmapImageRep(cgImage: workingImage)
+            }
+            NSLog("ScreenShot: composited \(focusBlurAnnotations.count) focus dim(s) into \(pxW)x\(pxH)")
+            return NSBitmapImageRep(cgImage: result)
+        }
 
         // Scale so we can draw annotations using selection-relative POINT coords.
         let scaleX = CGFloat(pxW) / selectionSizePoints.width
@@ -538,16 +595,60 @@ final class SelectionOverlayController {
         let gc = NSGraphicsContext(cgContext: ctx, flipped: false)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = gc
-        for ann in annotations { drawAnnotation(ann) }
+        for ann in strokeAnnotations { drawAnnotation(ann) }
         NSGraphicsContext.restoreGraphicsState()
         ctx.restoreGState()
 
         guard let result = ctx.makeImage() else {
             NSLog("ScreenShot: composite makeImage failed; falling back to raw image")
-            return NSBitmapImageRep(cgImage: cgImage)
+            return NSBitmapImageRep(cgImage: workingImage)
         }
         NSLog("ScreenShot: composited \(annotations.count) annotation(s) into \(pxW)x\(pxH)")
         return NSBitmapImageRep(cgImage: result)
+    }
+
+    private func applyFocusDim(
+        to image: CGImage,
+        focusRectPoints: CGRect,
+        selectionSizePoints: CGSize,
+        dimOpacity: CGFloat = FocusDimStyle.dimOpacity
+    ) -> CGImage? {
+        let pxW = image.width
+        let pxH = image.height
+        let scaleX = CGFloat(pxW) / selectionSizePoints.width
+        let scaleY = CGFloat(pxH) / selectionSizePoints.height
+
+        let focusPx = CGRect(
+            x: focusRectPoints.origin.x * scaleX,
+            y: focusRectPoints.origin.y * scaleY,
+            width: focusRectPoints.width * scaleX,
+            height: focusRectPoints.height * scaleY
+        ).integral
+
+        guard focusPx.width >= 2, focusPx.height >= 2 else { return image }
+
+        let colorSpace = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let bitmapInfo: UInt32 = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let ctx = CGContext(
+            data: nil,
+            width: pxW,
+            height: pxH,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else { return nil }
+
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: pxW, height: pxH))
+
+        ctx.setFillColor(CGColor(gray: 0, alpha: dimOpacity))
+        let dimPath = CGMutablePath()
+        dimPath.addRect(CGRect(x: 0, y: 0, width: pxW, height: pxH))
+        dimPath.addRect(focusPx)
+        ctx.addPath(dimPath)
+        ctx.fillPath(using: .evenOdd)
+
+        return ctx.makeImage()
     }
 
     private func drawAnnotation(_ a: Annotation) {
@@ -558,7 +659,7 @@ final class SelectionOverlayController {
         switch a.kind {
         case .rectangle:
             let path = NSBezierPath(rect: a.rect)
-            path.lineWidth = 3
+            path.lineWidth = AnnotationStrokeStyle.rectangleLineWidth
             path.lineJoinStyle = .round
             path.stroke()
         case .arrow:
@@ -575,7 +676,7 @@ final class SelectionOverlayController {
             let baseY = to.y - uy * headLen
 
             let shaft = NSBezierPath()
-            shaft.lineWidth = 4
+            shaft.lineWidth = AnnotationStrokeStyle.arrowShaftLineWidth
             shaft.lineCapStyle = .round
             shaft.move(to: from)
             shaft.line(to: NSPoint(x: baseX, y: baseY))
@@ -590,6 +691,8 @@ final class SelectionOverlayController {
             head.line(to: NSPoint(x: baseX - perpX * halfW, y: baseY - perpY * halfW))
             head.close()
             head.fill()
+        case .focusBlur:
+            break
         }
     }
 }
@@ -605,6 +708,7 @@ final class SelectionView: NSView {
         case selecting
         case idle
         case annotating
+        case editingAnnotation
     }
     private var phase: Phase = .awaitingSelection
 
@@ -622,6 +726,10 @@ final class SelectionView: NSView {
     private var annDragStart: CGPoint?
     private var annDragCurrent: CGPoint?
 
+    private var selectedAnnotationIndex: Int?
+    private var activeControlPoint: ActiveControlPoint?
+    private var moveDragLastPoint: CGPoint?
+
     /// Snapshot of the previous committed selection (and its annotations),
     /// captured when the user starts a fresh selection drag from `.idle`.
     /// Used to restore the previous edit if the new selection is too small.
@@ -630,6 +738,8 @@ final class SelectionView: NSView {
 
     /// Minimum width/height (in points) for a committed selection.
     private static let minSelectionSide: CGFloat = 20
+    private static let controlPointHitRadius: CGFloat = 9
+    private static let controlPointDrawRadius: CGFloat = 5
 
     private let toolbarState = ToolbarState()
     private var toolbarHost: NSHostingView<AnnotationToolbar>?
@@ -637,6 +747,7 @@ final class SelectionView: NSView {
 
     private var countdownRemaining: Int?
     private var countdownTask: Task<Void, Never>?
+    private var undoFlashTask: Task<Void, Never>?
     private static let countdownSeconds = 5
 
     override var isFlipped: Bool { false }
@@ -656,15 +767,50 @@ final class SelectionView: NSView {
 
     override func resetCursorRects() {
         if usesEditingCursor, let sel = localSelection {
-            addCursorRect(bounds, cursor: .arrow)
-            addCursorRect(sel, cursor: .crosshair)
+            addCursorRect(bounds, cursor: .crosshair)
+            addCursorRect(sel, cursor: cursorInsideSelection())
         } else {
             addCursorRect(bounds, cursor: .crosshair)
         }
     }
 
     private var usesEditingCursor: Bool {
-        (phase == .idle || phase == .annotating) && localSelection != nil
+        (phase == .idle || phase == .annotating || phase == .editingAnnotation) && localSelection != nil
+    }
+
+    private var isPointerToolActive: Bool {
+        toolbarState.tool == .pointer
+    }
+
+    private func cursorInsideSelection() -> NSCursor {
+        isPointerToolActive ? .arrow : .crosshair
+    }
+
+    private func updateCursor(at p: CGPoint) {
+        guard usesEditingCursor, let sel = localSelection else {
+            NSCursor.crosshair.set()
+            return
+        }
+        if sel.contains(p), isPointerToolActive {
+            NSCursor.arrow.set()
+        } else if sel.contains(p) {
+            NSCursor.crosshair.set()
+        } else {
+            NSCursor.crosshair.set()
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas {
+            removeTrackingArea(area)
+        }
+        let options: NSTrackingArea.Options = [.mouseMoved, .activeInKeyWindow, .inVisibleRect]
+        addTrackingArea(NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateCursor(at: convert(event.locationInWindow, from: nil))
     }
 
     private func refreshCursorRects() {
@@ -687,8 +833,13 @@ final class SelectionView: NSView {
             addSubview(host)
             toolbarHost = host
         }
-        toolbarCancellable = toolbarState.$tool.sink { [weak self] _ in
+        toolbarCancellable = toolbarState.$tool.sink { [weak self] tool in
             self?.controller?.bumpAutoKill()
+            if tool != .pointer {
+                self?.selectedAnnotationIndex = nil
+                self?.needsDisplay = true
+            }
+            self?.refreshCursorRects()
         }
     }
 
@@ -712,14 +863,15 @@ final class SelectionView: NSView {
             drawBadge(label, near: sel)
 
             for ann in annotations {
-                drawAnnotation(ann)
+                drawAnnotation(ann, in: sel, ctx: ctx)
             }
-            if let s = annDragStart, let c = annDragCurrent, let tool = toolbarState.tool {
-                let preview = Annotation(
-                    kind: tool == .arrow ? .arrow : .rectangle,
-                    start: s, end: c
-                )
-                drawAnnotation(preview)
+            if let idx = selectedAnnotationIndex, idx < annotations.count {
+                drawSelectionHandles(for: annotations[idx])
+            }
+            if let s = annDragStart, let c = annDragCurrent, let tool = toolbarState.tool,
+               let kind = tool.annotationKind {
+                let preview = Annotation(kind: kind, start: s, end: c)
+                drawAnnotation(preview, in: sel, ctx: ctx)
             }
             if let remaining = countdownRemaining {
                 drawCountdown(remaining, below: sel)
@@ -740,7 +892,16 @@ final class SelectionView: NSView {
         return mirrorSelection
     }
 
-    private func drawAnnotation(_ a: Annotation) {
+    private func drawAnnotation(_ a: Annotation, in selection: CGRect, ctx: CGContext) {
+        switch a.kind {
+        case .focusBlur:
+            drawFocusBlurPreview(ctx: ctx, selection: selection, focus: a.rect)
+        case .rectangle, .arrow:
+            drawStrokeAnnotation(a)
+        }
+    }
+
+    private func drawStrokeAnnotation(_ a: Annotation) {
         let color = NSColor.systemRed
         color.setStroke()
         color.setFill()
@@ -748,7 +909,7 @@ final class SelectionView: NSView {
         switch a.kind {
         case .rectangle:
             let path = NSBezierPath(rect: a.rect)
-            path.lineWidth = 3
+            path.lineWidth = AnnotationStrokeStyle.rectangleLineWidth
             path.lineJoinStyle = .round
             path.stroke()
         case .arrow:
@@ -765,7 +926,7 @@ final class SelectionView: NSView {
             let baseY = to.y - uy * headLen
 
             let shaft = NSBezierPath()
-            shaft.lineWidth = 4
+            shaft.lineWidth = AnnotationStrokeStyle.arrowShaftLineWidth
             shaft.lineCapStyle = .round
             shaft.move(to: from)
             shaft.line(to: NSPoint(x: baseX, y: baseY))
@@ -780,7 +941,202 @@ final class SelectionView: NSView {
             head.line(to: NSPoint(x: baseX - perpX * halfW, y: baseY - perpY * halfW))
             head.close()
             head.fill()
+        case .focusBlur:
+            break
         }
+    }
+
+    private func drawFocusBlurPreview(ctx: CGContext, selection: CGRect, focus: CGRect) {
+        ctx.saveGState()
+        ctx.clip(to: selection)
+
+        ctx.setFillColor(NSColor.black.withAlphaComponent(FocusDimStyle.dimOpacity).cgColor)
+        let outer = CGMutablePath()
+        outer.addRect(selection)
+        outer.addRect(focus)
+        ctx.addPath(outer)
+        ctx.fillPath(using: .evenOdd)
+
+        ctx.restoreGState()
+
+        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.55).cgColor)
+        ctx.setLineWidth(1)
+        ctx.stroke(focus.insetBy(dx: 0.5, dy: 0.5))
+    }
+
+    private func controlPoints(for ann: Annotation) -> [(ActiveControlPoint, CGPoint)] {
+        switch ann.kind {
+        case .arrow:
+            return [(.arrowStart, ann.start), (.arrowEnd, ann.end)]
+        case .rectangle, .focusBlur:
+            let r = ann.rect
+            return [
+                (.rectCorner(0), CGPoint(x: r.minX, y: r.minY)),
+                (.rectCorner(1), CGPoint(x: r.maxX, y: r.minY)),
+                (.rectCorner(2), CGPoint(x: r.maxX, y: r.maxY)),
+                (.rectCorner(3), CGPoint(x: r.minX, y: r.maxY)),
+            ]
+        }
+    }
+
+    private func rectCorners(for ann: Annotation) -> [CGPoint] {
+        controlPoints(for: ann).map(\.1)
+    }
+
+    private func drawSelectionHandles(for ann: Annotation) {
+        let r = Self.controlPointDrawRadius
+        for (_, pt) in controlPoints(for: ann) {
+            let handle = CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2)
+            NSColor.white.setFill()
+            NSBezierPath(ovalIn: handle).fill()
+            NSColor.controlAccentColor.setStroke()
+            let outline = NSBezierPath(ovalIn: handle)
+            outline.lineWidth = 1.5
+            outline.stroke()
+        }
+    }
+
+    private func controlPointHit(at p: CGPoint, for ann: Annotation) -> ActiveControlPoint? {
+        let hitR = Self.controlPointHitRadius
+        for (cp, pt) in controlPoints(for: ann) {
+            let dx = p.x - pt.x
+            let dy = p.y - pt.y
+            if dx * dx + dy * dy <= hitR * hitR {
+                return cp
+            }
+        }
+        return nil
+    }
+
+    private func annotationIndex(at p: CGPoint) -> Int? {
+        for idx in annotations.indices.reversed() {
+            if hitTestAnnotation(annotations[idx], at: p) {
+                return idx
+            }
+        }
+        return nil
+    }
+
+    private func hitTestAnnotation(_ ann: Annotation, at p: CGPoint) -> Bool {
+        switch ann.kind {
+        case .rectangle, .focusBlur:
+            return ann.rect.insetBy(dx: -6, dy: -6).contains(p)
+        case .arrow:
+            return distanceToSegment(p, ann.start, ann.end) <= 10
+        }
+    }
+
+    private func distanceToSegment(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        let lenSq = dx * dx + dy * dy
+        if lenSq < 0.001 {
+            return hypot(p.x - a.x, p.y - a.y)
+        }
+        var t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq
+        t = max(0, min(1, t))
+        let projX = a.x + t * dx
+        let projY = a.y + t * dy
+        return hypot(p.x - projX, p.y - projY)
+    }
+
+    private func applyControlPointDrag(to p: CGPoint) {
+        guard let idx = selectedAnnotationIndex, idx < annotations.count,
+              let cp = activeControlPoint else { return }
+        var ann = annotations[idx]
+        switch cp {
+        case .move:
+            guard let last = moveDragLastPoint else { return }
+            let dx = p.x - last.x
+            let dy = p.y - last.y
+            if abs(dx) > 0.001 || abs(dy) > 0.001 {
+                if let sel = localSelection {
+                    ann = translateAnnotation(ann, by: dx, dy: dy, constrainedTo: sel)
+                } else {
+                    ann.start = CGPoint(x: ann.start.x + dx, y: ann.start.y + dy)
+                    ann.end = CGPoint(x: ann.end.x + dx, y: ann.end.y + dy)
+                }
+                annotations[idx] = ann
+            }
+            moveDragLastPoint = p
+        case .arrowStart:
+            ann.start = p
+            annotations[idx] = ann
+        case .arrowEnd:
+            ann.end = p
+            annotations[idx] = ann
+        case .rectCorner(let corner):
+            let corners = rectCorners(for: ann)
+            let opposite = corners[(corner + 2) % 4]
+            ann.start = p
+            ann.end = opposite
+            annotations[idx] = ann
+        }
+    }
+
+    private func annotationBounds(_ ann: Annotation) -> CGRect {
+        switch ann.kind {
+        case .rectangle, .focusBlur:
+            return ann.rect
+        case .arrow:
+            let pad: CGFloat = 22
+            let r = ann.rect
+            return r.insetBy(dx: -pad, dy: -pad)
+        }
+    }
+
+    private func translateAnnotation(
+        _ ann: Annotation,
+        by dx: CGFloat,
+        dy: CGFloat,
+        constrainedTo selection: CGRect
+    ) -> Annotation {
+        var a = ann
+        a.start = CGPoint(x: a.start.x + dx, y: a.start.y + dy)
+        a.end = CGPoint(x: a.end.x + dx, y: a.end.y + dy)
+
+        let bounds = annotationBounds(a)
+        var fixX: CGFloat = 0
+        var fixY: CGFloat = 0
+        if bounds.minX < selection.minX { fixX = selection.minX - bounds.minX }
+        if bounds.maxX > selection.maxX { fixX = selection.maxX - bounds.maxX }
+        if bounds.minY < selection.minY { fixY = selection.minY - bounds.minY }
+        if bounds.maxY > selection.maxY { fixY = selection.maxY - bounds.maxY }
+        if fixX != 0 || fixY != 0 {
+            a.start.x += fixX
+            a.start.y += fixY
+            a.end.x += fixX
+            a.end.y += fixY
+        }
+        return a
+    }
+
+    @discardableResult
+    private func handlePointerMouseDown(at p: CGPoint) -> Bool {
+        if let idx = selectedAnnotationIndex, idx < annotations.count {
+            if let cp = controlPointHit(at: p, for: annotations[idx]) {
+                activeControlPoint = cp
+                moveDragLastPoint = nil
+                phase = .editingAnnotation
+                needsDisplay = true
+                return true
+            }
+        }
+
+        if let idx = annotationIndex(at: p) {
+            selectedAnnotationIndex = idx
+            activeControlPoint = .move
+            moveDragLastPoint = p
+            phase = .editingAnnotation
+            needsDisplay = true
+            return true
+        }
+
+        selectedAnnotationIndex = nil
+        activeControlPoint = nil
+        moveDragLastPoint = nil
+        needsDisplay = true
+        return true
     }
 
     private func drawBadge(_ text: String, near rect: CGRect) {
@@ -864,6 +1220,8 @@ final class SelectionView: NSView {
 
     private func positionToolbar(for selection: CGRect) {
         guard let host = toolbarHost else { return }
+        toolbarState.tool = .pointer
+        selectedAnnotationIndex = nil
         host.layout()
         let size = host.fittingSize
         var x = selection.midX - size.width / 2
@@ -877,6 +1235,7 @@ final class SelectionView: NSView {
         x = min(max(x, bounds.minX + 4), bounds.maxX - size.width - 4)
         host.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
         host.isHidden = false
+        refreshCursorRects()
     }
 
     private func hideToolbar() {
@@ -889,12 +1248,17 @@ final class SelectionView: NSView {
         if countdownRemaining != nil { return }
         let p = convert(event.locationInWindow, from: nil)
         controller?.bumpAutoKill()
+        updateCursor(at: p)
 
         switch phase {
         case .awaitingSelection, .selecting:
             startNewSelection(at: p)
-        case .idle, .annotating:
-            if let sel = localSelection, sel.contains(p), let _ = toolbarState.tool {
+        case .idle, .annotating, .editingAnnotation:
+            if toolbarState.tool == .pointer, let sel = localSelection, sel.contains(p) {
+                _ = handlePointerMouseDown(at: p)
+            } else if let sel = localSelection, sel.contains(p),
+                      let tool = toolbarState.tool, tool.isDrawingTool {
+                selectedAnnotationIndex = nil
                 phase = .annotating
                 annDragStart = p
                 annDragCurrent = p
@@ -902,6 +1266,7 @@ final class SelectionView: NSView {
             } else if let sel = localSelection, sel.contains(p) {
                 break
             } else {
+                selectedAnnotationIndex = nil
                 pendingRestoreSelection = localSelection
                 pendingRestoreAnnotations = annotations
                 annotations.removeAll()
@@ -917,6 +1282,7 @@ final class SelectionView: NSView {
         phase = .selecting
         selDragStart = p
         selDragCurrent = p
+        selectedAnnotationIndex = nil
         hideToolbar()
         broadcastInProgress()
         refreshCursorRects()
@@ -926,6 +1292,7 @@ final class SelectionView: NSView {
     override func mouseDragged(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         controller?.bumpAutoKill()
+        updateCursor(at: p)
 
         switch phase {
         case .selecting:
@@ -934,6 +1301,9 @@ final class SelectionView: NSView {
             needsDisplay = true
         case .annotating:
             annDragCurrent = p
+            needsDisplay = true
+        case .editingAnnotation:
+            applyControlPointDrag(to: p)
             needsDisplay = true
         case .awaitingSelection, .idle:
             break
@@ -985,18 +1355,32 @@ final class SelectionView: NSView {
 
         case .annotating:
             annDragCurrent = p
-            if let s = annDragStart, let c = annDragCurrent, let tool = toolbarState.tool {
+            if let s = annDragStart, let c = annDragCurrent, let tool = toolbarState.tool,
+               let kind = tool.annotationKind {
                 let dx = c.x - s.x
                 let dy = c.y - s.y
-                if sqrt(dx * dx + dy * dy) >= 3 {
-                    annotations.append(Annotation(
-                        kind: tool == .arrow ? .arrow : .rectangle,
-                        start: s, end: c
-                    ))
+                let shouldAdd: Bool
+                switch tool {
+                case .pointer:
+                    shouldAdd = false
+                case .arrow:
+                    shouldAdd = sqrt(dx * dx + dy * dy) >= 3
+                case .rectangle, .focusBlur:
+                    shouldAdd = abs(dx) >= 8 && abs(dy) >= 8
+                }
+                if shouldAdd {
+                    annotations.append(Annotation(kind: kind, start: s, end: c))
                 }
             }
             annDragStart = nil
             annDragCurrent = nil
+            phase = .idle
+            refreshCursorRects()
+            needsDisplay = true
+
+        case .editingAnnotation:
+            activeControlPoint = nil
+            moveDragLastPoint = nil
             phase = .idle
             refreshCursorRects()
             needsDisplay = true
@@ -1045,15 +1429,32 @@ final class SelectionView: NSView {
     @discardableResult
     private func undoLastAnnotation() -> Bool {
         guard !annotations.isEmpty else { return false }
+        let removedIndex = annotations.count - 1
         annotations.removeLast()
+        if selectedAnnotationIndex == removedIndex {
+            selectedAnnotationIndex = nil
+        } else if let idx = selectedAnnotationIndex, idx > removedIndex {
+            selectedAnnotationIndex = idx - 1
+        }
+        needsDisplay = true
+        return true
+    }
+
+    @discardableResult
+    private func deleteSelectedAnnotation() -> Bool {
+        guard let idx = selectedAnnotationIndex, idx < annotations.count else { return false }
+        annotations.remove(at: idx)
+        selectedAnnotationIndex = nil
         needsDisplay = true
         return true
     }
 
     private func flashUndoButton() {
+        undoFlashTask?.cancel()
         toolbarState.undoFlash = true
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 200_000_000)
+        undoFlashTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 70_000_000)
+            guard !Task.isCancelled else { return }
             self?.toolbarState.undoFlash = false
         }
     }
@@ -1195,16 +1596,38 @@ final class SelectionView: NSView {
         }
         if countdownRemaining == nil,
            localSelection != nil,
-           phase == .idle || phase == .annotating,
+           toolbarState.tool == .pointer,
+           (event.keyCode == 51 || event.keyCode == 117) {
+            if deleteSelectedAnnotation() {
+                return
+            }
+        }
+        if countdownRemaining == nil,
+           localSelection != nil,
+           phase == .idle || phase == .annotating || phase == .editingAnnotation,
            !event.modifierFlags.contains(.command) {
             switch chars.lowercased() {
+            case "v":
+                toolbarState.tool = .pointer
+                selectedAnnotationIndex = nil
+                refreshCursorRects()
+                needsDisplay = true
+                return
             case "a":
                 toolbarState.tool = .arrow
+                selectedAnnotationIndex = nil
                 refreshCursorRects()
                 needsDisplay = true
                 return
             case "r":
                 toolbarState.tool = .rectangle
+                selectedAnnotationIndex = nil
+                refreshCursorRects()
+                needsDisplay = true
+                return
+            case "f":
+                toolbarState.tool = .focusBlur
+                selectedAnnotationIndex = nil
                 refreshCursorRects()
                 needsDisplay = true
                 return
@@ -1228,11 +1651,17 @@ private struct AnnotationToolbar: View {
     var body: some View {
         HStack(spacing: 8) {
             ToolbarBlob {
+                ToolButton(systemName: "cursorarrow", help: "Select (V)", isOn: state.tool == .pointer) {
+                    state.tool = state.tool == .pointer ? nil : .pointer
+                }
                 ToolButton(systemName: "arrow.up.right", help: "Arrow (A)", isOn: state.tool == .arrow) {
                     state.tool = state.tool == .arrow ? nil : .arrow
                 }
                 ToolButton(systemName: "rectangle", help: "Rectangle (R)", isOn: state.tool == .rectangle) {
                     state.tool = state.tool == .rectangle ? nil : .rectangle
+                }
+                ToolButton(systemName: "viewfinder", help: "Focus dim (F)", isOn: state.tool == .focusBlur) {
+                    state.tool = state.tool == .focusBlur ? nil : .focusBlur
                 }
                 ToolButton(
                     systemName: "arrow.uturn.backward",
@@ -1292,6 +1721,7 @@ private struct ToolButton: View {
                     RoundedRectangle(cornerRadius: 6)
                         .fill(highlighted ? Color.accentColor : (hovering ? Color.primary.opacity(0.12) : Color.clear))
                 )
+                .animation(isFlashing ? .easeOut(duration: 0.05) : nil, value: isFlashing)
         }
         .buttonStyle(.plain)
         .help(help)
