@@ -60,7 +60,7 @@ open build/ScreenShot.app
 
 | Key | Action |
 | --- | --- |
-| **F4** | Begin region selection |
+| **F4** / **⌃P** / **⌘P** | Begin region selection |
 | Drag | Define the region (kept bright, rest dimmed) |
 | **↵ / ⌘C** | Capture, annotate-composite, copy + save |
 | **Timer (toolbar)** | 5-second countdown, then capture (hover inside selection during countdown) |

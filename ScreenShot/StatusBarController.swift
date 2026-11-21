@@ -82,7 +82,7 @@ final class StatusBarController: NSObject {
     private func showMenu() {
         let menu = NSMenu()
 
-        let capture = NSMenuItem(title: "Capture Region   F4 / ⌃P", action: #selector(captureAction), keyEquivalent: "")
+        let capture = NSMenuItem(title: "Capture Region   F4 / ⌃P / ⌘P", action: #selector(captureAction), keyEquivalent: "")
         capture.target = self
         menu.addItem(capture)
 
@@ -133,7 +133,7 @@ private struct CapturesPopoverView: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Button(action: onCapture) {
-                    Label("Capture (F4 / ⌃P)", systemImage: "camera.viewfinder")
+                    Label("Capture (F4 / ⌃P / ⌘P)", systemImage: "camera.viewfinder")
                 }
                 .buttonStyle(.borderless)
                 Spacer()
@@ -153,7 +153,7 @@ private struct CapturesPopoverView: View {
                     Text("No screenshots yet")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Text("Press F4 or ⌃P anywhere to capture")
+                    Text("Press F4, ⌃P or ⌘P anywhere to capture")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }

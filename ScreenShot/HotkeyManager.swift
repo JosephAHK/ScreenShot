@@ -7,6 +7,7 @@ final class HotkeyManager {
     private var escapeEventHandler: EventHandlerRef?
     private var hotKeyRef: EventHotKeyRef?
     private var ctrlPHotKeyRef: EventHotKeyRef?
+    private var cmdPHotKeyRef: EventHotKeyRef?
     private var escapeHotKeyRef: EventHotKeyRef?
     private let callback: () -> Void
     private static var sharedCallback: (() -> Void)?
@@ -70,6 +71,20 @@ final class HotkeyManager {
         guard ctrlPStatus == noErr else {
             throw NSError(domain: "ScreenShot.Hotkey", code: Int(ctrlPStatus),
                           userInfo: [NSLocalizedDescriptionKey: "RegisterEventHotKey Ctrl+P failed (\(ctrlPStatus))"])
+        }
+
+        // Cmd+P: alternate capture hotkey. Non-fatal if another app already owns it.
+        let cmdPHotKeyID = EventHotKeyID(signature: OSType(0x53534854 /* 'SSHT' */), id: 4)
+        let cmdPStatus = RegisterEventHotKey(
+            UInt32(kVK_ANSI_P),
+            UInt32(cmdKey),
+            cmdPHotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &cmdPHotKeyRef
+        )
+        if cmdPStatus != noErr {
+            NSLog("ScreenShot: RegisterEventHotKey Cmd+P failed (\(cmdPStatus))")
         }
     }
 
@@ -140,6 +155,7 @@ final class HotkeyManager {
         if let escapeEventHandler { RemoveEventHandler(escapeEventHandler) }
         if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
         if let ctrlPHotKeyRef { UnregisterEventHotKey(ctrlPHotKeyRef) }
+        if let cmdPHotKeyRef { UnregisterEventHotKey(cmdPHotKeyRef) }
         if let eventHandler { RemoveEventHandler(eventHandler) }
     }
 }
