@@ -1,0 +1,71 @@
+name: Release
+
+# Push a tag like v1.0.0 (or run manually with a tag name) to build both apps
+# and attach them to a GitHub Release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build universal app
+        run: |
+          chmod +x build.sh
+          UNIVERSAL=1 ./build.sh
+          lipo -info build/ScreenShot.app/Contents/MacOS/ScreenShot
+      - name: Zip
+        run: ditto -c -k --keepParent build/ScreenShot.app "ScreenShot-macOS-${TAG}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: ScreenShot-macOS-*.zip
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Publish single-file exe
+        shell: pwsh
+        run: |
+          dotnet publish windows/src/ScreenShot.csproj -c Release -o out `
+            --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none
+          Compress-Archive -Path out/ScreenShot.exe -DestinationPath "ScreenShot-Windows-x64-$env:TAG.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: ScreenShot-Windows-x64-*.zip
+
+  release:
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" ScreenShot-*.zip \
+            --repo "$GITHUB_REPOSITORY" --title "ScreenShot $TAG" --target "$GITHUB_SHA" \
+            --notes "**macOS 14+** (universal): unzip, move ScreenShot.app to Applications. It's ad-hoc signed, not notarized, so the first time right-click → Open (or run \`xattr -cr /Applications/ScreenShot.app\`), then allow Screen Recording.
+
+          **Windows 10/11** (x64): unzip and run ScreenShot.exe. No install or .NET needed. SmartScreen may warn because it's unsigned: More info → Run anyway. Enable *Launch at Login* from the tray icon's right-click menu."

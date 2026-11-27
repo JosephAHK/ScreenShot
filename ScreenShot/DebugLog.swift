@@ -15,6 +15,8 @@ enum DebugLog {
         message: String,
         data: [String: String] = [:]
     ) {
+        // Opt-in only: these entries include OCR'd screen text. Enable with SCREENSHOT_DEBUG=1.
+        guard ProcessInfo.processInfo.environment["SCREENSHOT_DEBUG"] != nil else { return }
         var payload: [String: Any] = [
             "sessionId": "db6400",
             "hypothesisId": hypothesisId,

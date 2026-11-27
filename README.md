@@ -1,106 +1,97 @@
 # ScreenShot
 
 <p align="center">
+  <img src="https://img.shields.io/badge/macOS-14%2B-000000?style=for-the-badge&logo=apple&logoColor=white" alt="macOS 14+" />
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Windows 10 | 11" />
   <img src="https://img.shields.io/badge/Swift-5.9-FA7343?style=for-the-badge&logo=swift&logoColor=white" alt="Swift" />
-  <img src="https://img.shields.io/badge/SwiftUI-Popover%20%2B%20Hosting-007AFF?style=for-the-badge&logo=swift&logoColor=white" alt="SwiftUI" />
-  <img src="https://img.shields.io/badge/AppKit-NSStatusItem%20%2B%20NSPopover-1E88E5?style=for-the-badge&logo=apple&logoColor=white" alt="AppKit" />
-  <img src="https://img.shields.io/badge/macOS-14%2B-000000?style=for-the-badge&logo=apple&logoColor=white" alt="macOS" />
-  <img src="https://img.shields.io/badge/ScreenCaptureKit-Pixel%20Perfect%20Region-FF6F00?style=for-the-badge&logo=apple&logoColor=white" alt="ScreenCaptureKit" />
-  <img src="https://img.shields.io/badge/Carbon-Global%20Hotkey%20F4-555555?style=for-the-badge&logo=apple&logoColor=white" alt="Carbon" />
-  <img src="https://img.shields.io/badge/ServiceManagement-Launch%20at%20Login-34C759?style=for-the-badge&logo=apple&logoColor=white" alt="ServiceManagement" />
-  <img src="https://img.shields.io/badge/CoreGraphics-Bitmap%20Compositing-9333EA?style=for-the-badge" alt="CoreGraphics" />
-  <img src="https://img.shields.io/badge/License-MIT-2EA44F?style=for-the-badge" alt="License" />
+  <img src="https://img.shields.io/badge/C%23-.NET%2010-512BD4?style=for-the-badge&logo=dotnet&logoColor=white" alt=".NET 10" />
+  <img src="https://img.shields.io/badge/License-MIT-2EA44F?style=for-the-badge" alt="MIT" />
 </p>
 
 <p align="center">
-  Press <b>F4</b> anywhere on macOS to dim the screen, drag-select a region, optionally annotate it with arrows or rectangles, then hit <b>↵</b> or <b>⌘C</b> to copy it to the clipboard <i>and</i> save it to <code>~/Desktop/ScreenShot Captures/</code>.
+  A tiny, fast region-screenshot tool for <b>macOS</b> and <b>Windows</b>. Press <b>F4</b>, drag a box, optionally mark it up, hit <b>Enter</b>, and it's on your clipboard <i>and</i> saved to <code>Desktop/ScreenShot Captures</code>.
 </p>
+
+## Download
+
+Grab the latest build from **[Releases](../../releases/latest)**:
+
+| Platform | File | First run |
+| --- | --- | --- |
+| macOS 14+ (Apple Silicon & Intel) | `ScreenShot-macOS-*.zip` | Unzip, move to Applications. It's not notarized, so right-click → **Open** the first time (or `xattr -cr /Applications/ScreenShot.app`), then allow **Screen Recording**. |
+| Windows 10/11 x64 | `ScreenShot-Windows-x64-*.zip` | Unzip and run `ScreenShot.exe`. No installer or .NET needed. If SmartScreen warns, click **More info → Run anyway**. |
 
 ## Features
 
-- **Global F4 hotkey** via Carbon `RegisterEventHotKey` (no Accessibility permission required).
-- **Drag-to-select with live dim cutout** — the rest of every display fades to ~55 % black while the selection rectangle stays bright, with a `W × H` badge near it.
-- **Pixel-perfect capture** via `ScreenCaptureKit` (`SCScreenshotManager` + `sourceRect`). The selection is snapped to the display's physical pixel grid so the captured bitmap is byte-identical 1:1 to what was on screen — no resampling, no half-pixel blur on Retina.
-- **In-overlay annotation toolbar** appears under the selection after mouse-up — Arrow, Rectangle, Undo (⌘Z), Copy, **Timed capture (5s)**. Annotations are composited onto the screenshot in a `CGBitmapContext` at native pixel density before clipboard / save.
-- **Timed capture** — tap the timer button to count down from 5 under the selection (mouse passes through the bright cutout so you can hover menus); then capture runs like an instant copy.
-- **Auto-save** to `~/Desktop/ScreenShot Captures/Screenshot YYYY-MM-DD at HH.MM.SS.png` on every copy.
-- **Menu bar flyout** (left-click the camera icon) — `NSPopover` hosting a SwiftUI 3-column 1:1 grid of every screenshot in the folder, sorted newest-first. Hover a thumb to reveal Copy / Open-in-Preview buttons; clicking Copy plays a Tink and shows a spring-animated "Copied" check overlay.
-- **Right-click status item menu** — Capture, Open Captures Folder, Launch at Login toggle (`SMAppService.mainApp.register()`), Quit.
-- **Multi-display aware**: dim overlays span every `NSScreen`; selections that cross displays are clipped to the display containing the midpoint.
-- **Action sound** — `Glass` system sound on successful capture, Tink on thumb copy, `NSSound.beep()` on failure.
-
-## Architecture
-
-| File | Role |
-| --- | --- |
-| `ScreenShotApp.swift` | `@main` SwiftUI app + `AppDelegate` wiring; pre-prompts Screen Recording on launch. |
-| `HotkeyManager.swift` | Carbon `RegisterEventHotKey` for `kVK_F4`, no modifiers. |
-| `StatusBarController.swift` | `NSStatusItem` + `NSPopover`; SwiftUI `CapturesPopoverView` / `ThumbView` / `HoverIconButton`; `LaunchAtLogin` wrapper around `SMAppService`. |
-| `SelectionOverlayController.swift` | Per-screen borderless `OverlayWindow` (`canBecomeKey = true`) at `.screenSaver` level. `SelectionView` draws the dim + cutout, runs the selection / annotation state machine, hosts the SwiftUI `AnnotationToolbar` via `NSHostingView`. Final image is composited from the captured `CGImage` + annotations in a `CGBitmapContext`. |
-| `ScreenCapture.swift` | Maps a global AppKit rect to the right `SCDisplay`, snaps to the pixel grid, configures `SCStreamConfiguration` (`sourceRect`, exact pixel `width`/`height`, `scalesToFit = false`, `captureResolution = .best`, Display P3). |
-| `CapturesStore.swift` | `ObservableObject` listing `.png`/`.jpg` files in `~/Desktop/ScreenShot Captures/`, sorted by modification date; PNG encode from `NSBitmapImageRep`. |
-
-## Build & run
-
-```bash
-chmod +x build.sh install.sh
-./build.sh
-open build/ScreenShot.app
-```
-
-## Install to /Applications
-
-```bash
-./install.sh
-```
-
-`install.sh` builds, kills any running instance, runs `tccutil reset ScreenCapture com.screenshot.app` for a clean permission prompt, `ditto`s to `/Applications/ScreenShot.app` (falls back to `~/Applications`), removes any stale duplicate in the other location, then opens it.
+- **Global hotkey:** F4 on both platforms. macOS also takes ⌃P / ⌘P; Windows also takes Ctrl+P, and PrtSc when Windows isn't using it.
+- **Drag to select** with the rest of every display dimmed and a live `W × H` badge.
+- **Pixel-perfect capture:** ScreenCaptureKit on macOS, Per-Monitor-V2 DPI-aware GDI capture on Windows. No resampling or blur on HiDPI screens.
+- **Annotation toolbar** under the selection:
+  - Select / move / resize (V)
+  - Arrow (A)
+  - Rectangle (R)
+  - Focus dim (F): darkens everything except the area you drag
+  - Undo (⌘Z / Ctrl+Z)
+- **Copy text (OCR)** from the selected region, using Apple Vision on macOS and `Windows.Media.Ocr` on Windows. Everything runs on-device.
+- **Timed capture:** a 5-second countdown with the live screen visible so you can open menus or hover states first.
+- **Auto-save** every capture to `Desktop/ScreenShot Captures/Screenshot YYYY-MM-DD at HH.MM.SS.png`.
+- **Recent captures flyout** from the menu-bar / tray icon:
+  - 3-column thumbnail grid
+  - Hover to copy or delete
+  - Double-click to open
+  - Drag a thumbnail out as a file
+- **Launch at login** toggle in the icon's right-click menu.
 
 ## Keyboard
 
 | Key | Action |
 | --- | --- |
-| **F4** / **⌃P** / **⌘P** | Begin region selection |
-| Drag | Define the region (kept bright, rest dimmed) |
-| **↵ / ⌘C** | Capture, annotate-composite, copy + save |
-| **Timer (toolbar)** | 5-second countdown, then capture (hover inside selection during countdown) |
-| **A / R** | Arrow / Rectangle annotation tool (with selection) |
-| **⌘Z** | Undo last annotation |
-| **Esc** | Cancel countdown if active; otherwise cancel overlay |
+| **F4** (also ⌃P / ⌘P on Mac, Ctrl+P on Windows) | Start a region capture |
+| Drag | Select the region |
+| **Enter** / **⌘C** / **Ctrl+C** | Copy + save |
+| **V / A / R / F** | Select / Arrow / Rectangle / Focus-dim tool |
+| **⌘Z** / **Ctrl+Z** | Undo the last annotation |
+| **Delete** | Remove the selected annotation |
+| **Esc** | Cancel (or cancel the countdown) |
 
-## Permissions
+## Build from source
 
-On first capture you'll be prompted for **Screen Recording** under System Settings → Privacy & Security → Screen Recording. No Accessibility permission is required.
+### macOS
 
-## Icon
-
-The app icon is generated from an SF Symbol via [`tools/make-icon.swift`](tools/make-icon.swift) (camera.viewfinder on an orange→red gradient squircle):
+Requires macOS 14+ and the Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
-swift tools/make-icon.swift AppIcon.iconset
-iconutil -c icns AppIcon.iconset -o ScreenShot/AppIcon.icns
+./install.sh            # build, install to /Applications, launch
+# or just build:
+./build.sh              # → build/ScreenShot.app
+UNIVERSAL=1 ./build.sh  # arm64 + x86_64
 ```
 
-## Requirements
-
-- macOS 14 (Sonoma) or later — `SCScreenshotManager` is 14+
-- Xcode Command Line Tools (`xcode-select --install`)
-
-## License
-
-MIT
-
-## Windows port
-
-A native C# / WinForms port lives in [`windows/`](windows/) (Windows 10+, no admin needed).
+### Windows
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File windows\install.ps1
 ```
 
-Builds one self-contained `ScreenShot.exe` into `%LOCALAPPDATA%\Programs\ScreenShot`, adds a Start Menu shortcut, enables launch at login and starts it (installs a user-local .NET SDK first if needed).
+Builds a single self-contained `ScreenShot.exe` into `%LOCALAPPDATA%\Programs\ScreenShot`, adds a Start Menu shortcut, turns on launch at login and starts it. If no .NET SDK is found, it installs one locally for your user first; no admin rights are needed.
 
-- **F4** or **Ctrl+P** (and **PrtSc** if Windows isn't using it; note Ctrl+P overrides Print in other apps) freezes every monitor, dims it, and you drag a region. The capture is a 1:1 crop of the frozen frame in physical pixels (Per-Monitor-V2 DPI aware).
-- Same toolbar and keys as on macOS: **V / A / R / F** tools, **Ctrl+Z** undo, **Del** removes the selected annotation, **Enter / Ctrl+C** copies (PNG + DIB) and saves to `Desktop\ScreenShot Captures`, a 5 s timed capture (click-through live view, **Esc** cancels), and **OCR copy** via `Windows.Media.Ocr`. Right-click backs out of the selection.
-- Tray icon: left-click opens the recent-captures flyout (hover to copy or delete, double-click to open, drag out as a file, right-click menu). Right-click the icon for Capture, Open Folder, Launch at Login, and Quit.
-- Log: `%LOCALAPPDATA%\ScreenShot\screenshot.log`.
+### Releases
+
+Push a tag such as `v1.0.0` (or run the **Release** workflow manually). GitHub Actions builds the universal macOS app and the Windows exe and attaches both to a GitHub Release.
+
+## Project layout
+
+| Path | What |
+| --- | --- |
+| `ScreenShot/` | macOS app: SwiftUI + AppKit, ScreenCaptureKit, Carbon hotkeys, Vision OCR |
+| `windows/src/` | Windows app: C# WinForms, `RegisterHotKey`, layered windows, Windows.Media.Ocr |
+| `tools/` | macOS icon generator and OCR tests |
+| `.github/workflows/release.yml` | CI release build for both platforms |
+
+## Privacy
+
+Nothing leaves your machine. Captures go to your clipboard and Desktop folder, and OCR runs locally. On macOS, verbose debug logging (which can include OCR'd text) is off unless you launch with `SCREENSHOT_DEBUG=1`.
+
+## License
+
+MIT
