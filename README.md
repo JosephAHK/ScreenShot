@@ -89,3 +89,18 @@ iconutil -c icns AppIcon.iconset -o ScreenShot/AppIcon.icns
 ## License
 
 MIT
+
+## Windows port
+
+A native C# / WinForms port lives in [`windows/`](windows/) (Windows 10+, no admin needed).
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\install.ps1
+```
+
+Builds one self-contained `ScreenShot.exe` into `%LOCALAPPDATA%\Programs\ScreenShot`, adds a Start Menu shortcut, enables launch at login and starts it (installs a user-local .NET SDK first if needed).
+
+- **F4** or **Ctrl+P** (and **PrtSc** if Windows isn't using it; note Ctrl+P overrides Print in other apps) freezes every monitor, dims it, and you drag a region. The capture is a 1:1 crop of the frozen frame in physical pixels (Per-Monitor-V2 DPI aware).
+- Same toolbar and keys as on macOS: **V / A / R / F** tools, **Ctrl+Z** undo, **Del** removes the selected annotation, **Enter / Ctrl+C** copies (PNG + DIB) and saves to `Desktop\ScreenShot Captures`, a 5 s timed capture (click-through live view, **Esc** cancels), and **OCR copy** via `Windows.Media.Ocr`. Right-click backs out of the selection.
+- Tray icon: left-click opens the recent-captures flyout (hover to copy or delete, double-click to open, drag out as a file, right-click menu). Right-click the icon for Capture, Open Folder, Launch at Login, and Quit.
+- Log: `%LOCALAPPDATA%\ScreenShot\screenshot.log`.
